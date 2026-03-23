@@ -4,7 +4,17 @@ A benchmarking console application that measures performance of three different 
 
 ## What it benchmarks
 
-The **Artifact Tree** is a hierarchical breakdown of a software project — from business capabilities down to user stories, test cases, and generated code. This app compares storing that tree using:
+The **Artifact Tree** is a hierarchical breakdown of a software project. The benchmark now models this structure:
+
+- Root = depth 0
+- Capability, Business Process = depth 1
+- Business Process Flow, Epic = depth 2
+- Feature, Architecture = depth 3
+- User Story = depth 4
+- Test Case, Git Commit = depth 5
+- ADO Push, Generated Artifact = depth 6
+
+This app compares storing that tree using:
 
 | Strategy | Description |
 |---|---|
@@ -20,8 +30,11 @@ Each strategy is measured on:
 - `ReadFullTree` — reconstruct the complete tree
 - `GetSingleNode` — O(1) vs O(replay) lookup
 - `GetChildren` — direct children of a node
+- `GetChildrenByParentId` — fetch children for a given parent artifact id
 - `GetParent` — direct parent of a node
+- `GetParentsWithNoChildrenOfType` — find parent nodes without children of a specified artifact type
 - `AddArtifact` — append a new leaf
+- `AddChildrenOfType` — add child artifacts of a chosen type under a parent
 - `DeleteArtifact` — delete with cascade
 - `MoveArtifact` — re-parent a node
 - `SetArtifactEnabled` — enable/disable with descendants
@@ -33,15 +46,15 @@ Each strategy is measured on:
 
 | Size | Nodes |
 |---|---|
-| Small | ~54 |
-| Medium | ~666 |
-| Large | ~2,544 |
+| Small | ~57 |
+| Medium | ~569 |
+| Large | ~2,743 |
 
 ## Getting started
 
 ### Prerequisites
 
-- [.NET 8 SDK](https://dotnet.microsoft.com/download)
+- [.NET 9 SDK](https://dotnet.microsoft.com/download)
 - MongoDB running locally (or Docker)
 - *(Optional)* Neo4j 5 for graph benchmarks
 
@@ -52,7 +65,7 @@ Each strategy is measured on:
 docker run -d -p 27017:27017 mongo:7
 
 # Neo4j (optional)
-docker run -d -p 7474:7474 -p 7687:7687 -e NEO4J_AUTH=neo4j/yourpassword neo4j:5
+docker run -d -p 7474:7474 -p 7687:7687 -e NEO4J_AUTH=neo4j/password neo4j:5
 ```
 
 ### Configure
@@ -62,7 +75,12 @@ Edit `TreeVsEventSim/appsettings.json` or use environment variables:
 ```bash
 # Override via env vars (prefix BENCH_)
 export BENCH_MongoDB__ConnectionString=mongodb://localhost:27017
-export BENCH_Neo4j__Password=yourpassword
+export BENCH_Neo4j__Password=password
+export BENCH_Neo4j__Encrypted=false
+
+# If running this app inside a dev container, localhost points to the container.
+# Use the host bridge to reach Neo4j running on the host Docker daemon.
+export BENCH_Neo4j__Uri=bolt://host.docker.internal:7687
 ```
 
 > **Security note:** The default Neo4j password in `appsettings.json` is for local development only. Always use environment variables or a secrets manager for credentials in production.

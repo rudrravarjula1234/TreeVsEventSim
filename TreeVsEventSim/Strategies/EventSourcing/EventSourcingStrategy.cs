@@ -1,4 +1,5 @@
 using MongoDB.Bson;
+using MongoDB.Bson.IO;
 using MongoDB.Driver;
 using TreeVsEventSim.Models;
 using TreeVsEventSim.Simulation;
@@ -13,7 +14,7 @@ namespace TreeVsEventSim.Strategies.EventSourcing;
 /// Read path:  query all events for a project, replay in order → projection.
 /// This mirrors the production Anvian design described in the problem statement.
 /// </summary>
-public sealed class EventSourcingStrategy : IStorageStrategy
+public sealed class EventSourcingStrategy : IStorageStrategy, IStorageSnapshotProvider
 {
     private readonly IMongoClient _client;
     private IMongoCollection<EventStoreDocument> _collection = null!;
@@ -260,6 +261,75 @@ public sealed class EventSourcingStrategy : IStorageStrategy
         catch
         {
             return -1;
+        }
+    }
+
+    public async Task<IReadOnlyList<string>> GetStorageSnapshotLinesAsync(
+        string clientId,
+        string projectId,
+        int maxItems = 8)
+    {
+        try
+        {
+            var filter = Builders<EventStoreDocument>.Filter.And(
+                Builders<EventStoreDocument>.Filter.Eq(e => e.ClientId, clientId),
+                Builders<EventStoreDocument>.Filter.Eq(e => e.AggregateId, projectId),
+                Builders<EventStoreDocument>.Filter.Eq(e => e.AggregateType, "ArtifactTree"));
+
+            var total = await _collection.CountDocumentsAsync(filter);
+            var docs = await _collection.Find(filter)
+                .SortBy(e => e.Version)
+                .Limit(Math.Max(1, maxItems))
+                .ToListAsync();
+
+            var lines = new List<string>
+            {
+                $"Collection: EventStore",
+                $"Total events: {total:N0}",
+                "Sample events:",
+            };
+
+            foreach (var doc in docs)
+            {
+                var artifactId = doc.EventData.TryGetValue("artifactId", out var idVal)
+                    ? idVal.ToString()
+                    : "-";
+                lines.Add(
+                    $"v{doc.Version}: {doc.EventType} artifactId={artifactId} occurredOn={doc.OccurredOn:O}");
+            }
+
+            return lines;
+        }
+        catch (Exception ex)
+        {
+            return [$"Failed to fetch EventStore snapshot: {ex.Message}"];
+        }
+    }
+
+    public async Task<IReadOnlyList<string>> GetSampleJsonEntriesAsync(
+        string clientId,
+        string projectId,
+        int maxItems = 3)
+    {
+        try
+        {
+            var filter = Builders<EventStoreDocument>.Filter.And(
+                Builders<EventStoreDocument>.Filter.Eq(e => e.ClientId, clientId),
+                Builders<EventStoreDocument>.Filter.Eq(e => e.AggregateId, projectId),
+                Builders<EventStoreDocument>.Filter.Eq(e => e.AggregateType, "ArtifactTree"));
+
+            var docs = await _collection.Find(filter)
+                .SortBy(e => e.Version)
+                .Limit(Math.Max(1, maxItems))
+                .ToListAsync();
+
+            return docs
+                .Select(doc => doc.ToBsonDocument().ToJson(new JsonWriterSettings { Indent = true }))
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            return [$"{{ \"error\": \"{ex.Message.Replace("\"", "\\\"")}\" }}"];
         }
     }
 

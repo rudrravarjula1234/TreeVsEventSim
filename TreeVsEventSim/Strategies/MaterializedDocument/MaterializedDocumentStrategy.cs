@@ -1,4 +1,5 @@
 using MongoDB.Bson;
+using MongoDB.Bson.IO;
 using MongoDB.Bson.Serialization.Attributes;
 using MongoDB.Driver;
 using TreeVsEventSim.Models;
@@ -12,6 +13,7 @@ namespace TreeVsEventSim.Strategies.MaterializedDocument;
 internal sealed class MaterializedTreeDocument
 {
     [BsonId]
+    [BsonIgnoreIfDefault]
     public ObjectId Id { get; set; }
 
     [BsonElement("clientId")]
@@ -74,7 +76,7 @@ internal sealed class ArtifactNodeDto
 /// Mutations update individual fields in-place using MongoDB's update operators —
 /// no event log, no replay overhead.
 /// </summary>
-public sealed class MaterializedDocumentStrategy : IStorageStrategy
+public sealed class MaterializedDocumentStrategy : IStorageStrategy, IStorageSnapshotProvider
 {
     private readonly IMongoClient _client;
     private IMongoCollection<MaterializedTreeDocument> _collection = null!;
@@ -436,6 +438,98 @@ public sealed class MaterializedDocumentStrategy : IStorageStrategy
         catch
         {
             return -1;
+        }
+    }
+
+    public async Task<IReadOnlyList<string>> GetStorageSnapshotLinesAsync(
+        string clientId,
+        string projectId,
+        int maxItems = 8)
+    {
+        try
+        {
+            var db = _client.GetDatabase("TreeBenchmark");
+            var rawCollection = db.GetCollection<BsonDocument>("MaterializedTrees");
+
+            var filter = new BsonDocument
+            {
+                ["clientId"] = clientId,
+                ["projectId"] = projectId,
+            };
+
+            var doc = await rawCollection.Find(filter).FirstOrDefaultAsync();
+            if (doc == null)
+                return ["No materialized document found."];
+
+            var artifactIndex = doc.TryGetValue("artifactIndex", out var indexVal)
+                ? indexVal.AsBsonDocument
+                : new BsonDocument();
+
+            var lines = new List<string>
+            {
+                "Collection: MaterializedTrees",
+                $"Document version: {doc.GetValue("version", 0)}",
+                $"Nodes in artifactIndex: {artifactIndex.ElementCount:N0}",
+                "Sample nodes:",
+            };
+
+            foreach (var elem in artifactIndex.Elements.Take(Math.Max(1, maxItems)))
+            {
+                var node = elem.Value.AsBsonDocument;
+                var parentId = node.TryGetValue("parentId", out var pVal)
+                    ? pVal.ToString()
+                    : "null";
+                var type = node.TryGetValue("artifactType", out var tVal)
+                    ? tVal.ToString()
+                    : "Unknown";
+                var depth = node.TryGetValue("depth", out var dVal)
+                    ? dVal.ToString()
+                    : "0";
+                var childrenCount = node.TryGetValue("childrenIds", out var cVal)
+                    ? cVal.AsBsonArray.Count
+                    : 0;
+
+                lines.Add(
+                    $"{elem.Name}: type={type} parentId={parentId} depth={depth} children={childrenCount}");
+            }
+
+            return lines;
+        }
+        catch (Exception ex)
+        {
+            return [$"Failed to fetch MaterializedTrees snapshot: {ex.Message}"];
+        }
+    }
+
+    public async Task<IReadOnlyList<string>> GetSampleJsonEntriesAsync(
+        string clientId,
+        string projectId,
+        int maxItems = 3)
+    {
+        try
+        {
+            var db = _client.GetDatabase("TreeBenchmark");
+            var rawCollection = db.GetCollection<BsonDocument>("MaterializedTrees");
+
+            var filter = new BsonDocument
+            {
+                ["clientId"] = clientId,
+                ["projectId"] = projectId,
+            };
+
+            var doc = await rawCollection.Find(filter).FirstOrDefaultAsync();
+            if (doc == null || !doc.TryGetValue("artifactIndex", out var indexVal))
+                return [];
+
+            return indexVal.AsBsonDocument.Elements
+                .Take(Math.Max(1, maxItems))
+                .Select(elem => new BsonDocument(elem.Name, elem.Value)
+                    .ToJson(new JsonWriterSettings { Indent = true }))
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            return [$"{{ \"error\": \"{ex.Message.Replace("\"", "\\\"")}\" }}"];
         }
     }
 

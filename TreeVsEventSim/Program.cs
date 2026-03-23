@@ -8,6 +8,7 @@ using TreeVsEventSim.Strategies;
 using TreeVsEventSim.Strategies.EventSourcing;
 using TreeVsEventSim.Strategies.MaterializedDocument;
 using TreeVsEventSim.Strategies.Neo4j;
+using TreeVsEventSim.Visualization;
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -22,7 +23,16 @@ var mongoConnStr = config["MongoDB:ConnectionString"] ?? "mongodb://localhost:27
 var neo4jUri     = config["Neo4j:Uri"]              ?? "bolt://localhost:7687";
 var neo4jUser    = config["Neo4j:User"]             ?? "neo4j";
 var neo4jPassword= config["Neo4j:Password"]         ?? "password";
+var neo4jEncrypted = bool.TryParse(config["Neo4j:Encrypted"], out var enc) && enc;
 var verbose      = bool.Parse(config["Benchmark:Verbose"] ?? "true");
+var visualizeOnly = bool.TryParse(config["Visualization:Enabled"], out var vis) && vis;
+var onlySingleTreeSize = bool.TryParse(
+    config["Visualization:OnlySingleTreeSize"], out var singleOnly) && singleOnly;
+var singleTreeSizeRaw = config["Visualization:SingleTreeSize"] ?? "Small";
+var snapshotMaxItems = int.TryParse(
+    config["Visualization:SnapshotMaxItems"], out var snapMax) && snapMax > 0
+    ? snapMax
+    : 8;
 
 // Which tree sizes to run (default: all three)
 var rawSizes = config.GetSection("Benchmark:TreeSizes").Get<string[]>()
@@ -30,6 +40,14 @@ var rawSizes = config.GetSection("Benchmark:TreeSizes").Get<string[]>()
 var treeSizes = rawSizes
     .Select(s => Enum.Parse<TreeSize>(s, ignoreCase: true))
     .ToArray();
+
+if (onlySingleTreeSize)
+{
+    var singleTreeSize = Enum.TryParse<TreeSize>(singleTreeSizeRaw, true, out var parsed)
+        ? parsed
+        : TreeSize.Small;
+    treeSizes = [singleTreeSize];
+}
 
 // ── Banner ────────────────────────────────────────────────────────────────────
 
@@ -42,6 +60,7 @@ AnsiConsole.MarkupLine(
 AnsiConsole.MarkupLine($"[grey]MongoDB:[/]  {mongoConnStr}");
 AnsiConsole.MarkupLine($"[grey]Neo4j:  [/]  {neo4jUri}  (user: {neo4jUser})");
 AnsiConsole.MarkupLine($"[grey]Sizes:  [/]  {string.Join(", ", treeSizes)}");
+AnsiConsole.MarkupLine($"[grey]Mode:   [/]  {(visualizeOnly ? "Visualize-only" : "Benchmark")}");
 AnsiConsole.WriteLine();
 
 // ── Strategy initialization ───────────────────────────────────────────────────
@@ -50,7 +69,7 @@ var strategies = new List<IStorageStrategy>
 {
     new EventSourcingStrategy(mongoConnStr),
     new MaterializedDocumentStrategy(mongoConnStr),
-    new Neo4jStrategy(neo4jUri, neo4jUser, neo4jPassword),
+    new Neo4jStrategy(neo4jUri, neo4jUser, neo4jPassword, neo4jEncrypted),
 };
 
 await AnsiConsole.Status()
@@ -66,6 +85,11 @@ if (!neo4jStrategy.IsAvailable)
 {
     AnsiConsole.MarkupLine(
         "[yellow]⚠  Neo4j is not reachable — Neo4j results will be marked N/A.[/]");
+    if (!string.IsNullOrWhiteSpace(neo4jStrategy.AvailabilityError))
+    {
+        AnsiConsole.MarkupLine(
+            $"[grey]   Reason:[/] {Markup.Escape(neo4jStrategy.AvailabilityError)}");
+    }
     AnsiConsole.MarkupLine(
         "[grey]   Start Neo4j locally: " +
         "docker run -p 7474:7474 -p 7687:7687 -e NEO4J_AUTH=neo4j/password neo4j:5[/]\n");
@@ -73,6 +97,18 @@ if (!neo4jStrategy.IsAvailable)
 else
 {
     AnsiConsole.MarkupLine("[green]✓  Neo4j connected.[/]\n");
+}
+
+if (visualizeOnly)
+{
+    var visualizationService = new StorageVisualizationService();
+    await visualizationService.RunAsync(strategies, treeSizes, snapshotMaxItems);
+
+    foreach (var strategy in strategies)
+        await strategy.DisposeAsync();
+
+    AnsiConsole.MarkupLine("[bold green]✓  Visualization complete.[/]");
+    return;
 }
 
 // ── Benchmark loop ────────────────────────────────────────────────────────────
@@ -120,7 +156,7 @@ foreach (var size in treeSizes)
             .StartAsync(async ctx =>
             {
                 var task = ctx.AddTask(
-                    $"[green]{Markup.Escape(strategy.Name)}[/] ({size})", maxValue: 10);
+                    $"[green]{Markup.Escape(strategy.Name)}[/] ({size})", maxValue: 13);
 
                 await strategy.CleanupAsync(tree.ClientId, tree.ProjectId);
 
@@ -180,7 +216,18 @@ foreach (var size in treeSizes)
                     storageSize));
                 task.Increment(1);
 
-                // 5. GetParent ─────────────────────────────────────────────────
+                // 5. GetChildrenByParentId ────────────────────────────────────
+                var parentIdForChildrenLookup = internalNode.ArtifactId;
+                results.Add(await MeasureOpAsync("GetChildrenByParentId", tree, strategy,
+                    WarmupRuns, MeasureRuns,
+                    warmup: async () => await strategy.GetChildrenAsync(
+                        tree.ClientId, tree.ProjectId, parentIdForChildrenLookup),
+                    measure: async () => await strategy.GetChildrenAsync(
+                        tree.ClientId, tree.ProjectId, parentIdForChildrenLookup),
+                    storageSize));
+                task.Increment(1);
+
+                // 6. GetParent ─────────────────────────────────────────────────
                 results.Add(await MeasureOpAsync("GetParent", tree, strategy,
                     WarmupRuns, MeasureRuns,
                     warmup: async () => await strategy.GetParentAsync(
@@ -190,7 +237,30 @@ foreach (var size in treeSizes)
                     storageSize));
                 task.Increment(1);
 
-                // 6. AddArtifact ───────────────────────────────────────────────
+                // 7. GetParentsWithNoChildrenOfType ───────────────────────────
+                const ArtifactType childTypeForParentFilter = ArtifactType.TestCase;
+                results.Add(await MeasureOpAsync("GetParentsWithNoChildrenOfType", tree, strategy,
+                    WarmupRuns, MeasureRuns,
+                    warmup: async () =>
+                    {
+                        await CountParentsWithNoChildrenOfTypeAsync(
+                            strategy,
+                            tree.ClientId,
+                            tree.ProjectId,
+                            childTypeForParentFilter);
+                    },
+                    measure: async () =>
+                    {
+                        await CountParentsWithNoChildrenOfTypeAsync(
+                            strategy,
+                            tree.ClientId,
+                            tree.ProjectId,
+                            childTypeForParentFilter);
+                    },
+                    storageSize));
+                task.Increment(1);
+
+                // 8. AddArtifact ───────────────────────────────────────────────
                 int addSeq = 0;
                 var addParentId = leafNode.ParentId!;
                 results.Add(await MeasureOpAsync("AddArtifact", tree, strategy,
@@ -204,7 +274,21 @@ foreach (var size in treeSizes)
                     storageSize));
                 task.Increment(1);
 
-                // 7. DeleteArtifact ────────────────────────────────────────────
+                // 9. AddChildrenOfType ────────────────────────────────────────
+                const ArtifactType addChildType = ArtifactType.IntegrationTestCase;
+                int addTypedSeq = 0;
+                results.Add(await MeasureOpAsync("AddChildrenOfType", tree, strategy,
+                    WarmupRuns, MeasureRuns,
+                    warmup: async () => await strategy.AddArtifactAsync(
+                        tree.ClientId, tree.ProjectId,
+                        $"add-type-w-{addTypedSeq++}", addChildType, addParentId, "Warmup Typed Child"),
+                    measure: async () => await strategy.AddArtifactAsync(
+                        tree.ClientId, tree.ProjectId,
+                        $"add-type-m-{addTypedSeq++}", addChildType, addParentId, "Measure Typed Child"),
+                    storageSize));
+                task.Increment(1);
+
+                // 10. DeleteArtifact ───────────────────────────────────────────
                 int delSeq = 0;
                 results.Add(await MeasureOpAsync("DeleteArtifact", tree, strategy,
                     WarmupRuns, MeasureRuns,
@@ -229,7 +313,7 @@ foreach (var size in treeSizes)
                     storageSize));
                 task.Increment(1);
 
-                // 8. MoveArtifact ──────────────────────────────────────────────
+                // 11. MoveArtifact ─────────────────────────────────────────────
                 var moveNodeId  = $"move-{Guid.NewGuid():N}";
                 var moveParentA = leafNode.ParentId!;
                 var moveParentB = tree.RandomLeaf(rng).ParentId!;
@@ -266,7 +350,7 @@ foreach (var size in treeSizes)
                     storageSize));
                 task.Increment(1);
 
-                // 9. SetArtifactEnabled ────────────────────────────────────────
+                // 12. SetArtifactEnabled ───────────────────────────────────────
                 bool toggleState = false;
                 results.Add(await MeasureOpAsync("SetArtifactEnabled", tree, strategy,
                     WarmupRuns, MeasureRuns,
@@ -279,7 +363,7 @@ foreach (var size in treeSizes)
                     storageSize));
                 task.Increment(1);
 
-                // 10. ClearBranch ──────────────────────────────────────────────
+                // 13. ClearBranch ──────────────────────────────────────────────
                 int clearSeq     = 0;
                 var clearParentId = internalNode.ArtifactId;
                 results.Add(await MeasureOpAsync("ClearBranch", tree, strategy,
@@ -388,6 +472,30 @@ static async Task<OperationResult> MeasureOpAsync(
             ErrorMessage  = ex.Message,
         };
     }
+}
+
+static async Task<int> CountParentsWithNoChildrenOfTypeAsync(
+    IStorageStrategy strategy,
+    string clientId,
+    string projectId,
+    ArtifactType childType)
+{
+    var projection = await strategy.ReadFullTreeAsync(clientId, projectId);
+    if (projection == null) return 0;
+
+    var count = 0;
+    foreach (var parent in projection.ArtifactIndex.Values)
+    {
+        var hasChildOfType = parent.ChildrenIds
+            .Select(id => projection.ArtifactIndex.GetValueOrDefault(id))
+            .OfType<ArtifactNode>()
+            .Any(child => child.ArtifactType == childType);
+
+        if (!hasChildOfType)
+            count++;
+    }
+
+    return count;
 }
 
 // ── Support types ─────────────────────────────────────────────────────────────

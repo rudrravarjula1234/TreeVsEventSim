@@ -1,4 +1,5 @@
 using Neo4j.Driver;
+using System.Text.Json;
 using TreeVsEventSim.Models;
 using TreeVsEventSim.Simulation;
 using TreeVsEventSim.Strategies;
@@ -16,7 +17,7 @@ namespace TreeVsEventSim.Strategies.Neo4j;
 /// If Neo4j is unavailable the strategy gracefully returns null / empty results
 /// and IsAvailable == false so the benchmark runner can report N/A.
 /// </summary>
-public sealed class Neo4jStrategy : IStorageStrategy
+public sealed class Neo4jStrategy : IStorageStrategy, IStorageSnapshotProvider
 {
     private readonly IDriver _driver;
 
@@ -25,13 +26,19 @@ public sealed class Neo4jStrategy : IStorageStrategy
         "Neo4j graph database — nodes as :Artifact, edges as [:PARENT] relationships";
 
     public bool IsAvailable { get; private set; }
+    public string? AvailabilityError { get; private set; }
 
-    public Neo4jStrategy(string uri, string user, string password)
+    public Neo4jStrategy(string uri, string user, string password, bool encrypted = false)
     {
         _driver = GraphDatabase.Driver(
             uri,
             AuthTokens.Basic(user, password),
-            config => config.WithMaxConnectionPoolSize(10));
+            config =>
+            {
+                config.WithMaxConnectionPoolSize(10);
+                config.WithEncryptionLevel(
+                    encrypted ? EncryptionLevel.Encrypted : EncryptionLevel.None);
+            });
     }
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -42,6 +49,7 @@ public sealed class Neo4jStrategy : IStorageStrategy
         {
             await _driver.VerifyConnectivityAsync();
             IsAvailable = true;
+            AvailabilityError = null;
 
             // Create index on (artifactId, projectId) for O(1) node lookups
             await using var session = _driver.AsyncSession();
@@ -52,9 +60,10 @@ public sealed class Neo4jStrategy : IStorageStrategy
                     "FOR (n:Artifact) ON (n.artifactId, n.projectId)");
             });
         }
-        catch
+        catch (Exception ex)
         {
             IsAvailable = false;
+            AvailabilityError = ex.Message;
         }
     }
 
@@ -469,6 +478,92 @@ public sealed class Neo4jStrategy : IStorageStrategy
 
             return nodeCount * AvgNodeBytes + relCount * AvgRelationshipBytes;
         });
+    }
+
+    public async Task<IReadOnlyList<string>> GetStorageSnapshotLinesAsync(
+        string clientId,
+        string projectId,
+        int maxItems = 8)
+    {
+        if (!IsAvailable) return ["Neo4j unavailable."];
+
+        try
+        {
+            await using var session = _driver.AsyncSession();
+
+            var counts = await session.ExecuteReadAsync(async tx =>
+            {
+                var cursor = await tx.RunAsync(
+                    "MATCH (n:Artifact {projectId: $projectId, clientId: $clientId}) " +
+                    "OPTIONAL MATCH (n)-[r:PARENT]->() " +
+                    "RETURN count(DISTINCT n) AS nodeCount, count(r) AS relCount",
+                    new { projectId, clientId });
+                await cursor.FetchAsync();
+                return cursor.Current;
+            });
+
+            var sample = await session.ExecuteReadAsync(async tx =>
+            {
+                var cursor = await tx.RunAsync(
+                    "MATCH (n:Artifact {projectId: $projectId, clientId: $clientId}) " +
+                    "RETURN n.artifactId AS id, n.artifactType AS type, n.parentId AS parentId, n.depth AS depth " +
+                    "ORDER BY n.depth ASC, n.artifactId ASC " +
+                    "LIMIT $limit",
+                    new { projectId, clientId, limit = Math.Max(1, maxItems) });
+                return await cursor.ToListAsync();
+            });
+
+            var lines = new List<string>
+            {
+                "Graph: :Artifact nodes and [:PARENT] edges",
+                $"Nodes: {counts["nodeCount"].As<long>():N0}",
+                $"Relationships: {counts["relCount"].As<long>():N0}",
+                "Sample nodes:",
+            };
+
+            lines.AddRange(sample.Select(r =>
+                $"{r["id"].As<string>()}: type={r["type"].As<string>()} parentId={r["parentId"].As<string>()} depth={r["depth"].As<long>()}"));
+
+            return lines;
+        }
+        catch (Exception ex)
+        {
+            return [$"Failed to fetch Neo4j snapshot: {ex.Message}"];
+        }
+    }
+
+    public async Task<IReadOnlyList<string>> GetSampleJsonEntriesAsync(
+        string clientId,
+        string projectId,
+        int maxItems = 3)
+    {
+        if (!IsAvailable) return ["{ \"error\": \"Neo4j unavailable\" }"];
+
+        try
+        {
+            await using var session = _driver.AsyncSession();
+            var sample = await session.ExecuteReadAsync(async tx =>
+            {
+                var cursor = await tx.RunAsync(
+                    "MATCH (n:Artifact {projectId: $projectId, clientId: $clientId}) " +
+                    "RETURN n " +
+                    "ORDER BY n.depth ASC, n.artifactId ASC " +
+                    "LIMIT $limit",
+                    new { projectId, clientId, limit = Math.Max(1, maxItems) });
+                return await cursor.ToListAsync();
+            });
+
+            return sample.Select(record =>
+            {
+                var node = record["n"].As<INode>();
+                var payload = node.Properties.ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+                return JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true });
+            }).ToList();
+        }
+        catch (Exception ex)
+        {
+            return [$"{{ \"error\": \"{ex.Message.Replace("\"", "\\\"")}\" }}"];
+        }
     }
 
     // ── Dispose ───────────────────────────────────────────────────────────────

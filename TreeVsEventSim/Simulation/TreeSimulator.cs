@@ -34,42 +34,127 @@ public static class TreeSimulator
             null, "Project Understanding", 0);
         AddNode(projection, root, null, events);
 
-        // ── Capabilities ──────────────────────────────────────────────────
+        // ── Level 1: Capabilities ──────────────────────────────────────────
         for (int c = 0; c < cfg.CapabilityCount; c++)
         {
-            var cap = MakeNode($"cap-{c}", ArtifactType.Capability,
-                root.ArtifactId, $"Capability {c + 1}", 1);
+            var cap = MakeNode(
+                $"cap-{c}",
+                ArtifactType.Capability,
+                root.ArtifactId,
+                $"Capability {c + 1}: {RandomTitle(random)}",
+                1);
             AddNode(projection, cap, root.ArtifactId, events);
         }
 
-        // ── Epics + Features + UserStories + TestCases ────────────────────
-        for (int e = 0; e < cfg.EpicCount; e++)
+        // ── Level 1+: Business Processes and descendants ───────────────────
+        for (int bp = 0; bp < cfg.BusinessProcessCount; bp++)
         {
-            var epicId = $"epic-{e}";
-            var epic = MakeNode(epicId, ArtifactType.Epic,
-                root.ArtifactId, $"Epic {e + 1}: {RandomTitle(random)}", 1);
-            AddNode(projection, epic, root.ArtifactId, events);
+            var processId = $"bp-{bp}";
+            var process = MakeNode(
+                processId,
+                ArtifactType.BusinessProcess,
+                root.ArtifactId,
+                $"Business Process {bp + 1}: {RandomTitle(random)}",
+                1);
+            AddNode(projection, process, root.ArtifactId, events);
 
-            for (int f = 0; f < cfg.FeaturesPerEpic; f++)
+            for (int flow = 0; flow < cfg.FlowsPerBusinessProcess; flow++)
             {
-                var featureId = $"feat-{e}-{f}";
-                var feature = MakeNode(featureId, ArtifactType.Feature,
-                    epicId, $"Feature {f + 1}: {RandomTitle(random)}", 2);
-                AddNode(projection, feature, epicId, events);
+                var flowNode = MakeNode(
+                    $"bpf-{bp}-{flow}",
+                    ArtifactType.BusinessProcessFlow,
+                    processId,
+                    $"Business Process Flow {flow + 1}",
+                    2);
+                AddNode(projection, flowNode, processId, events);
+            }
 
-                for (int s = 0; s < cfg.StoriesPerFeature; s++)
+            for (int epic = 0; epic < cfg.EpicsPerBusinessProcess; epic++)
+            {
+                var epicId = $"epic-{bp}-{epic}";
+                var epicNode = MakeNode(
+                    epicId,
+                    ArtifactType.Epic,
+                    processId,
+                    $"Epic {epic + 1}: {RandomTitle(random)}",
+                    2);
+                AddNode(projection, epicNode, processId, events);
+
+                for (int architecture = 0; architecture < cfg.ArchitecturesPerEpic; architecture++)
                 {
-                    var storyId = $"story-{e}-{f}-{s}";
-                    var story = MakeNode(storyId, ArtifactType.UserStory,
-                        featureId, $"Story {s + 1}: {RandomTitle(random)}", 3);
-                    AddNode(projection, story, featureId, events);
+                    var architectureNode = MakeNode(
+                        $"arch-{bp}-{epic}-{architecture}",
+                        ArtifactType.Architecture,
+                        epicId,
+                        $"Architecture {architecture + 1}",
+                        3);
+                    AddNode(projection, architectureNode, epicId, events);
+                }
 
-                    for (int t = 0; t < cfg.TestCasesPerStory; t++)
+                for (int feature = 0; feature < cfg.FeaturesPerEpic; feature++)
+                {
+                    var featureId = $"feat-{bp}-{epic}-{feature}";
+                    var featureNode = MakeNode(
+                        featureId,
+                        ArtifactType.Feature,
+                        epicId,
+                        $"Feature {feature + 1}: {RandomTitle(random)}",
+                        3);
+                    AddNode(projection, featureNode, epicId, events);
+
+                    for (int story = 0; story < cfg.StoriesPerFeature; story++)
                     {
-                        var tcId = $"tc-{e}-{f}-{s}-{t}";
-                        var tc = MakeNode(tcId, ArtifactType.TestCase,
-                            storyId, $"Test Case {t + 1}", 4);
-                        AddNode(projection, tc, storyId, events);
+                        var storyId = $"story-{bp}-{epic}-{feature}-{story}";
+                        var storyNode = MakeNode(
+                            storyId,
+                            ArtifactType.UserStory,
+                            featureId,
+                            $"Story {story + 1}: {RandomTitle(random)}",
+                            4);
+                        AddNode(projection, storyNode, featureId, events);
+
+                        for (int testCase = 0; testCase < cfg.TestCasesPerStory; testCase++)
+                        {
+                            var testCaseId = $"tc-{bp}-{epic}-{feature}-{story}-{testCase}";
+                            var testCaseNode = MakeNode(
+                                testCaseId,
+                                ArtifactType.TestCase,
+                                storyId,
+                                $"Test Case {testCase + 1}",
+                                5);
+                            AddNode(projection, testCaseNode, storyId, events);
+
+                            var generatedArtifactId =
+                                $"gen-{bp}-{epic}-{feature}-{story}-{testCase}";
+                            var generatedArtifactNode = MakeNode(
+                                generatedArtifactId,
+                                ArtifactType.GeneratedArtifact,
+                                testCaseId,
+                                $"Generated Artifact {testCase + 1}",
+                                6);
+                            AddNode(projection, generatedArtifactNode, testCaseId, events);
+                        }
+
+                        for (int commit = 0; commit < cfg.GitCommitsPerStory; commit++)
+                        {
+                            var commitId = $"git-{bp}-{epic}-{feature}-{story}-{commit}";
+                            var commitNode = MakeNode(
+                                commitId,
+                                ArtifactType.GitCommit,
+                                storyId,
+                                $"Git Commit {commit + 1}",
+                                5);
+                            AddNode(projection, commitNode, storyId, events);
+
+                            var adoPushId = $"ado-{bp}-{epic}-{feature}-{story}-{commit}";
+                            var adoPushNode = MakeNode(
+                                adoPushId,
+                                ArtifactType.AdoPush,
+                                commitId,
+                                $"ADO Push {commit + 1}",
+                                6);
+                            AddNode(projection, adoPushNode, commitId, events);
+                        }
                     }
                 }
             }
@@ -136,35 +221,51 @@ public static class TreeSimulator
     private static SimulationConfig GetConfig(TreeSize size) => size switch
     {
         TreeSize.Small => new(
-            CapabilityCount: 3,
-            EpicCount: 5,
-            FeaturesPerEpic: 3,
+            CapabilityCount: 2,
+            BusinessProcessCount: 2,
+            FlowsPerBusinessProcess: 1,
+            EpicsPerBusinessProcess: 2,
+            ArchitecturesPerEpic: 1,
+            FeaturesPerEpic: 2,
             StoriesPerFeature: 2,
-            TestCasesPerStory: 0),
+            TestCasesPerStory: 1,
+            GitCommitsPerStory: 1),
 
         TreeSize.Medium => new(
-            CapabilityCount: 5,
-            EpicCount: 10,
-            FeaturesPerEpic: 5,
-            StoriesPerFeature: 4,
-            TestCasesPerStory: 2),
+            CapabilityCount: 4,
+            BusinessProcessCount: 4,
+            FlowsPerBusinessProcess: 2,
+            EpicsPerBusinessProcess: 3,
+            ArchitecturesPerEpic: 1,
+            FeaturesPerEpic: 2,
+            StoriesPerFeature: 3,
+            TestCasesPerStory: 2,
+            GitCommitsPerStory: 1),
 
         TreeSize.Large => new(
-            CapabilityCount: 8,
-            EpicCount: 15,
-            FeaturesPerEpic: 8,
-            StoriesPerFeature: 5,
-            TestCasesPerStory: 3),
+            CapabilityCount: 6,
+            BusinessProcessCount: 6,
+            FlowsPerBusinessProcess: 3,
+            EpicsPerBusinessProcess: 4,
+            ArchitecturesPerEpic: 1,
+            FeaturesPerEpic: 3,
+            StoriesPerFeature: 4,
+            TestCasesPerStory: 2,
+            GitCommitsPerStory: 2),
 
         _ => throw new ArgumentOutOfRangeException(nameof(size)),
     };
 
     private record SimulationConfig(
         int CapabilityCount,
-        int EpicCount,
+        int BusinessProcessCount,
+        int FlowsPerBusinessProcess,
+        int EpicsPerBusinessProcess,
+        int ArchitecturesPerEpic,
         int FeaturesPerEpic,
         int StoriesPerFeature,
-        int TestCasesPerStory);
+        int TestCasesPerStory,
+        int GitCommitsPerStory);
 }
 
 public enum TreeSize { Small, Medium, Large }

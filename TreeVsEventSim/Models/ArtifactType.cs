@@ -1,59 +1,57 @@
 namespace TreeVsEventSim.Models;
 
 /// <summary>
-/// Artifact type hierarchy — 33 values (0–32) covering product artifacts,
-/// architecture, documents, and code-generation artifacts.
+/// Artifact types used across the benchmark tree, including the core
+/// hierarchical nodes and additional document/quality artifacts.
 /// </summary>
 public enum ArtifactType
 {
-    // ── Root / Project level (depth 0) ──────────────────────────────────────
-    ProjectUnderstanding = 0,   // Root — no parent
-    Capability = 1,             // Root-level; predecessor: ProjectUnderstanding
-    BusinessProcessFlow = 2,    // Root-level; predecessors: ProjectUnderstanding, Capability
-    Architecture = 3,           // Root-level; predecessor: ProjectUnderstanding
+    // ── Primary benchmark hierarchy ─────────────────────────────────────────
+    ProjectUnderstanding = 0,
+    Capability = 1,
+    BusinessProcess = 2,
+    BusinessProcessFlow = 3,
+    Epic = 4,
+    Feature = 5,
+    Architecture = 6,
+    UserStory = 7,
+    TestCase = 8,
+    GitCommit = 9,
+    AdoPush = 10,
+    GeneratedArtifact = 11,
 
-    // ── Epic level (depth 0 in tree) ────────────────────────────────────────
-    Epic = 4,                   // Root-level; predecessors: ProjectUnderstanding, Capability, BPF
-
-    // ── Feature level (depth 1) ─────────────────────────────────────────────
-    Feature = 5,                // Parent: Epic
-    EpicArchitecture = 6,       // Tied to Epic; predecessors include Architecture
-
-    // ── User Story level (depth 2) ──────────────────────────────────────────
-    UserStory = 7,              // Parent: Epic or Feature
-
-    // ── Leaf / Code-generation level (depth 3) ──────────────────────────────
-    TestCase = 8,               // Parent: Epic, Feature, or UserStory
-    FrontEndCode = 9,           // Parent: UserStory
-    BackEndCode = 10,           // Parent: UserStory
-    UnitTestCases = 11,         // Parent: UserStory
+    // ── Additional engineering artifacts ────────────────────────────────────
+    FrontEndCode = 12,
+    BackEndCode = 13,
+    UnitTestCases = 14,
 
     // ── Document artifacts ───────────────────────────────────────────────────
-    TechnicalSpecification = 12,
-    FunctionalSpecification = 13,
-    DesignDocument = 14,
-    ApiContract = 15,
-    DataModel = 16,
-    SecurityReview = 17,
-    PerformanceAnalysis = 18,
-    DeploymentPlan = 19,
+    TechnicalSpecification = 15,
+    FunctionalSpecification = 16,
+    DesignDocument = 17,
+    ApiContract = 18,
+    DataModel = 19,
+    SecurityReview = 20,
+    PerformanceAnalysis = 21,
+    DeploymentPlan = 22,
 
     // ── Architecture artifacts ───────────────────────────────────────────────
-    ArchitectureDecisionRecord = 20,
-    ComponentDiagram = 21,
-    SequenceDiagram = 22,
-    DataFlowDiagram = 23,
-    InfrastructurePlan = 24,
+    EpicArchitecture = 23,
+    ArchitectureDecisionRecord = 24,
+    ComponentDiagram = 25,
+    SequenceDiagram = 26,
+    DataFlowDiagram = 27,
+    InfrastructurePlan = 28,
 
     // ── Quality artifacts ────────────────────────────────────────────────────
-    AcceptanceCriteria = 25,
-    IntegrationTestCase = 26,
-    PerformanceTestCase = 27,
-    SecurityTestCase = 28,
+    AcceptanceCriteria = 29,
+    IntegrationTestCase = 30,
+    PerformanceTestCase = 31,
+    SecurityTestCase = 32,
 
     // ── CI/CD and operational artifacts ─────────────────────────────────────
-    PipelineConfiguration = 29,
-    InfrastructureAsCode = 30,
-    MonitoringAlert = 31,
-    ReleaseNote = 32,
+    PipelineConfiguration = 33,
+    InfrastructureAsCode = 34,
+    MonitoringAlert = 35,
+    ReleaseNote = 36,
 }
