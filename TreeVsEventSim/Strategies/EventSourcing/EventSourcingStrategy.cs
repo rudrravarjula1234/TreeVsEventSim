@@ -73,6 +73,14 @@ public sealed class EventSourcingStrategy : IStorageStrategy, IStorageSnapshotPr
                     .Ascending(e => e.EventType)
                     .Ascending(e => e.AggregateId),
                 new CreateIndexOptions { Background = true, Name = "idx_client_evt_agg" }),
+
+            new CreateIndexModel<EventStoreDocument>(
+                Builders<EventStoreDocument>.IndexKeys
+                    .Ascending(e => e.ClientId)
+                    .Ascending(e => e.EventType)
+                    .Ascending("eventData.artifactType")
+                    .Ascending(e => e.AggregateId),
+                new CreateIndexOptions { Background = true, Name = "idx_cross_project_type_search" }),
         ]);
     }
 
@@ -157,6 +165,22 @@ public sealed class EventSourcingStrategy : IStorageStrategy, IStorageSnapshotPr
         if (!proj.ArtifactIndex.TryGetValue(artifactId, out var node)) return null;
         if (node.ParentId == null) return null;
         return proj.ArtifactIndex.GetValueOrDefault(node.ParentId);
+    }
+
+    public async Task<int> SearchAcrossProjectsByTypeAsync(
+        string clientId,
+        IReadOnlyList<string> projectIds,
+        ArtifactType artifactType)
+    {
+        var filter = Builders<EventStoreDocument>.Filter.And(
+            Builders<EventStoreDocument>.Filter.Eq(e => e.ClientId, clientId),
+            Builders<EventStoreDocument>.Filter.Eq(e => e.AggregateType, "ArtifactTree"),
+            Builders<EventStoreDocument>.Filter.Eq(e => e.EventType, "ArtifactAdded"),
+            Builders<EventStoreDocument>.Filter.In(e => e.AggregateId, projectIds),
+            Builders<EventStoreDocument>.Filter.Eq("eventData.artifactType", artifactType.ToString()));
+
+        var count = await _collection.CountDocumentsAsync(filter);
+        return (int)count;
     }
 
     // ── Mutations ─────────────────────────────────────────────────────────────

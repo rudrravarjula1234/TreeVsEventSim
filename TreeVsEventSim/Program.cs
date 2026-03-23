@@ -24,6 +24,12 @@ var neo4jUri     = config["Neo4j:Uri"]              ?? "bolt://localhost:7687";
 var neo4jUser    = config["Neo4j:User"]             ?? "neo4j";
 var neo4jPassword= config["Neo4j:Password"]         ?? "password";
 var neo4jEncrypted = bool.TryParse(config["Neo4j:Encrypted"], out var enc) && enc;
+var warmupRuns = int.TryParse(config["Benchmark:WarmupIterations"], out var warmups)
+    ? warmups
+    : 3;
+var measureRuns = int.TryParse(config["Benchmark:MeasureIterations"], out var measures)
+    ? measures
+    : 20;
 var verbose      = bool.Parse(config["Benchmark:Verbose"] ?? "true");
 var visualizeOnly = bool.TryParse(config["Visualization:Enabled"], out var vis) && vis;
 var onlySingleTreeSize = bool.TryParse(
@@ -33,6 +39,24 @@ var snapshotMaxItems = int.TryParse(
     config["Visualization:SnapshotMaxItems"], out var snapMax) && snapMax > 0
     ? snapMax
     : 8;
+var crossProjectEnabled = bool.TryParse(
+    config["Benchmark:CrossProject:Enabled"], out var crossEnabled) && crossEnabled;
+var crossProjectCount = int.TryParse(
+    config["Benchmark:CrossProject:ProjectCount"], out var projectCount) && projectCount > 0
+    ? projectCount
+    : 3;
+var crossProjectNodesPerProject = int.TryParse(
+    config["Benchmark:CrossProject:NodesPerProject"], out var nodesPerProject) && nodesPerProject > 0
+    ? nodesPerProject
+    : 10_000;
+var crossProjectClientId = config["Benchmark:CrossProject:ClientId"] ?? "tenant-001";
+var crossProjectArtifactType = Enum.TryParse<ArtifactType>(
+    config["Benchmark:CrossProject:SearchArtifactType"],
+    ignoreCase: true,
+    out var parsedArtifactType)
+    ? parsedArtifactType
+    : ArtifactType.UserStory;
+var effectiveVisualizeOnly = visualizeOnly && !crossProjectEnabled;
 
 // Which tree sizes to run (default: all three)
 var rawSizes = config.GetSection("Benchmark:TreeSizes").Get<string[]>()
@@ -60,7 +84,12 @@ AnsiConsole.MarkupLine(
 AnsiConsole.MarkupLine($"[grey]MongoDB:[/]  {mongoConnStr}");
 AnsiConsole.MarkupLine($"[grey]Neo4j:  [/]  {neo4jUri}  (user: {neo4jUser})");
 AnsiConsole.MarkupLine($"[grey]Sizes:  [/]  {string.Join(", ", treeSizes)}");
-AnsiConsole.MarkupLine($"[grey]Mode:   [/]  {(visualizeOnly ? "Visualize-only" : "Benchmark")}");
+AnsiConsole.MarkupLine($"[grey]Mode:   [/]  {(crossProjectEnabled ? "Cross-project benchmark" : effectiveVisualizeOnly ? "Visualize-only" : "Benchmark")}");
+if (crossProjectEnabled)
+{
+    AnsiConsole.MarkupLine(
+        $"[grey]Cross-project:[/] {crossProjectCount} projects x {crossProjectNodesPerProject:N0} nodes, search {crossProjectArtifactType}");
+}
 AnsiConsole.WriteLine();
 
 // ── Strategy initialization ───────────────────────────────────────────────────
@@ -99,7 +128,7 @@ else
     AnsiConsole.MarkupLine("[green]✓  Neo4j connected.[/]\n");
 }
 
-if (visualizeOnly)
+if (effectiveVisualizeOnly)
 {
     var visualizationService = new StorageVisualizationService();
     await visualizationService.RunAsync(strategies, treeSizes, snapshotMaxItems);
@@ -111,10 +140,28 @@ if (visualizeOnly)
     return;
 }
 
-// ── Benchmark loop ────────────────────────────────────────────────────────────
+if (crossProjectEnabled)
+{
+    var crossProjectResults = await RunCrossProjectBenchmarkAsync(
+        strategies,
+        crossProjectClientId,
+        crossProjectCount,
+        crossProjectNodesPerProject,
+        crossProjectArtifactType,
+        warmupRuns,
+        measureRuns);
 
-const int WarmupRuns  = 3;
-const int MeasureRuns = 20;
+    ResultsReporter.PrintSummary(crossProjectResults);
+    ResultsReporter.PrintAnalysis(crossProjectResults);
+
+    foreach (var strategy in strategies)
+        await strategy.DisposeAsync();
+
+    AnsiConsole.MarkupLine("[bold green]✓  Cross-project benchmark complete.[/]");
+    return;
+}
+
+// ── Benchmark loop ────────────────────────────────────────────────────────────
 
 var allResults = new List<OperationResult>();
 
@@ -162,7 +209,7 @@ foreach (var size in treeSizes)
 
                 // 1. WriteTree ─────────────────────────────────────────────────
                 results.Add(await MeasureOpAsync("WriteTree", tree, strategy,
-                    WarmupRuns, MeasureRuns,
+                    warmupRuns, measureRuns,
                     warmup: async () =>
                     {
                         await strategy.CleanupAsync(tree.ClientId, tree.ProjectId);
@@ -188,7 +235,7 @@ foreach (var size in treeSizes)
 
                 // 2. ReadFullTree ───────────────────────────────────────────────
                 results.Add(await MeasureOpAsync("ReadFullTree", tree, strategy,
-                    WarmupRuns, MeasureRuns,
+                    warmupRuns, measureRuns,
                     warmup: async () =>
                         await strategy.ReadFullTreeAsync(tree.ClientId, tree.ProjectId),
                     measure: async () =>
@@ -198,7 +245,7 @@ foreach (var size in treeSizes)
 
                 // 3. GetSingleNode ──────────────────────────────────────────────
                 results.Add(await MeasureOpAsync("GetSingleNode", tree, strategy,
-                    WarmupRuns, MeasureRuns,
+                    warmupRuns, measureRuns,
                     warmup: async () => await strategy.GetSingleNodeAsync(
                         tree.ClientId, tree.ProjectId, targetNode.ArtifactId),
                     measure: async () => await strategy.GetSingleNodeAsync(
@@ -208,7 +255,7 @@ foreach (var size in treeSizes)
 
                 // 4. GetChildren ───────────────────────────────────────────────
                 results.Add(await MeasureOpAsync("GetChildren", tree, strategy,
-                    WarmupRuns, MeasureRuns,
+                    warmupRuns, measureRuns,
                     warmup: async () => await strategy.GetChildrenAsync(
                         tree.ClientId, tree.ProjectId, internalNode.ArtifactId),
                     measure: async () => await strategy.GetChildrenAsync(
@@ -219,7 +266,7 @@ foreach (var size in treeSizes)
                 // 5. GetChildrenByParentId ────────────────────────────────────
                 var parentIdForChildrenLookup = internalNode.ArtifactId;
                 results.Add(await MeasureOpAsync("GetChildrenByParentId", tree, strategy,
-                    WarmupRuns, MeasureRuns,
+                    warmupRuns, measureRuns,
                     warmup: async () => await strategy.GetChildrenAsync(
                         tree.ClientId, tree.ProjectId, parentIdForChildrenLookup),
                     measure: async () => await strategy.GetChildrenAsync(
@@ -229,7 +276,7 @@ foreach (var size in treeSizes)
 
                 // 6. GetParent ─────────────────────────────────────────────────
                 results.Add(await MeasureOpAsync("GetParent", tree, strategy,
-                    WarmupRuns, MeasureRuns,
+                    warmupRuns, measureRuns,
                     warmup: async () => await strategy.GetParentAsync(
                         tree.ClientId, tree.ProjectId, targetNode.ArtifactId),
                     measure: async () => await strategy.GetParentAsync(
@@ -240,7 +287,7 @@ foreach (var size in treeSizes)
                 // 7. GetParentsWithNoChildrenOfType ───────────────────────────
                 const ArtifactType childTypeForParentFilter = ArtifactType.TestCase;
                 results.Add(await MeasureOpAsync("GetParentsWithNoChildrenOfType", tree, strategy,
-                    WarmupRuns, MeasureRuns,
+                    warmupRuns, measureRuns,
                     warmup: async () =>
                     {
                         await CountParentsWithNoChildrenOfTypeAsync(
@@ -264,7 +311,7 @@ foreach (var size in treeSizes)
                 int addSeq = 0;
                 var addParentId = leafNode.ParentId!;
                 results.Add(await MeasureOpAsync("AddArtifact", tree, strategy,
-                    WarmupRuns, MeasureRuns,
+                    warmupRuns, measureRuns,
                     warmup: async () => await strategy.AddArtifactAsync(
                         tree.ClientId, tree.ProjectId,
                         $"add-w-{addSeq++}", ArtifactType.TestCase, addParentId, "Warmup"),
@@ -278,7 +325,7 @@ foreach (var size in treeSizes)
                 const ArtifactType addChildType = ArtifactType.IntegrationTestCase;
                 int addTypedSeq = 0;
                 results.Add(await MeasureOpAsync("AddChildrenOfType", tree, strategy,
-                    WarmupRuns, MeasureRuns,
+                    warmupRuns, measureRuns,
                     warmup: async () => await strategy.AddArtifactAsync(
                         tree.ClientId, tree.ProjectId,
                         $"add-type-w-{addTypedSeq++}", addChildType, addParentId, "Warmup Typed Child"),
@@ -291,7 +338,7 @@ foreach (var size in treeSizes)
                 // 10. DeleteArtifact ───────────────────────────────────────────
                 int delSeq = 0;
                 results.Add(await MeasureOpAsync("DeleteArtifact", tree, strategy,
-                    WarmupRuns, MeasureRuns,
+                    warmupRuns, measureRuns,
                     warmup: async () =>
                     {
                         var id = $"del-w-{delSeq++}";
@@ -328,7 +375,7 @@ foreach (var size in treeSizes)
                 // the closures can alternate moves between A and B correctly.
                 var moveState = new MoveState(moveParentA);
                 results.Add(await MeasureOpAsync("MoveArtifact", tree, strategy,
-                    WarmupRuns, MeasureRuns,
+                    warmupRuns, measureRuns,
                     warmup: async () =>
                     {
                         var dest = moveState.CurrentParent == moveParentA
@@ -353,7 +400,7 @@ foreach (var size in treeSizes)
                 // 12. SetArtifactEnabled ───────────────────────────────────────
                 bool toggleState = false;
                 results.Add(await MeasureOpAsync("SetArtifactEnabled", tree, strategy,
-                    WarmupRuns, MeasureRuns,
+                    warmupRuns, measureRuns,
                     warmup: async () => await strategy.SetArtifactEnabledAsync(
                         tree.ClientId, tree.ProjectId,
                         leafNode.ArtifactId, toggleState ^= true, []),
@@ -367,7 +414,7 @@ foreach (var size in treeSizes)
                 int clearSeq     = 0;
                 var clearParentId = internalNode.ArtifactId;
                 results.Add(await MeasureOpAsync("ClearBranch", tree, strategy,
-                    WarmupRuns, MeasureRuns,
+                    warmupRuns, measureRuns,
                     warmup: async () =>
                     {
                         var id = $"clr-w-{clearSeq++}";
@@ -496,6 +543,141 @@ static async Task<int> CountParentsWithNoChildrenOfTypeAsync(
     }
 
     return count;
+}
+
+static async Task<List<OperationResult>> RunCrossProjectBenchmarkAsync(
+    IReadOnlyList<IStorageStrategy> strategies,
+    string clientId,
+    int projectCount,
+    int nodesPerProject,
+    ArtifactType artifactType,
+    int warmupRuns,
+    int measureRuns)
+{
+    var trees = Enumerable.Range(0, projectCount)
+        .Select(_ => TreeSimulator.GenerateExactNodeCount(nodesPerProject, clientId))
+        .ToList();
+    var totalNodeCount = trees.Sum(t => t.NodeCount);
+    var projectIds = trees.Select(t => t.ProjectId).ToArray();
+    var results = new List<OperationResult>();
+
+    AnsiConsole.Write(new Rule("[bold cyan]Cross-Project Search Benchmark[/]").RuleStyle("cyan"));
+    AnsiConsole.MarkupLine(
+        $"  Projects: [white]{projectCount}[/]  " +
+        $"Nodes / project: [white]{nodesPerProject:N0}[/]  " +
+        $"Total nodes: [white]{totalNodeCount:N0}[/]  " +
+        $"Artifact type: [white]{artifactType}[/]\n");
+
+    foreach (var strategy in strategies)
+    {
+        if (strategy is Neo4jStrategy { IsAvailable: false })
+        {
+            AnsiConsole.MarkupLine(
+                $"[dim]  Skipped {Markup.Escape(strategy.Name)} (Neo4j not reachable)[/]");
+            continue;
+        }
+
+        AnsiConsole.MarkupLine(
+            $"[bold]Running {Markup.Escape(strategy.Name)}[/] — indexed search across {projectCount} projects");
+
+        await AnsiConsole.Status().StartAsync(
+            $"Seeding {strategy.Name}...",
+            async _ =>
+            {
+                foreach (var tree in trees)
+                {
+                    await strategy.CleanupAsync(tree.ClientId, tree.ProjectId);
+                    await strategy.WriteTreeAsync(tree);
+                }
+            });
+
+        long storageSize = 0;
+        foreach (var tree in trees)
+            storageSize += await strategy.GetStorageSizeBytesAsync(tree.ClientId, tree.ProjectId);
+
+        results.Add(await MeasureCustomOpAsync(
+            "SearchAcrossProjects",
+            TreeSize.Custom,
+            totalNodeCount,
+            strategy,
+            warmupRuns,
+            measureRuns,
+            warmup: async () =>
+            {
+                await strategy.SearchAcrossProjectsByTypeAsync(clientId, projectIds, artifactType);
+            },
+            measure: async () =>
+            {
+                await strategy.SearchAcrossProjectsByTypeAsync(clientId, projectIds, artifactType);
+            },
+            storageSize));
+
+        foreach (var tree in trees)
+            await strategy.CleanupAsync(tree.ClientId, tree.ProjectId);
+
+        AnsiConsole.WriteLine();
+    }
+
+    return results;
+}
+
+static async Task<OperationResult> MeasureCustomOpAsync(
+    string name,
+    TreeSize treeSize,
+    int nodeCount,
+    IStorageStrategy strategy,
+    int warmupRuns,
+    int measureRuns,
+    Func<Task> warmup,
+    Func<Task> measure,
+    long storageSize = -1)
+{
+    try
+    {
+        for (int i = 0; i < warmupRuns; i++)
+            await warmup();
+
+        var sw = new System.Diagnostics.Stopwatch();
+        var latencies = new double[measureRuns];
+        long memBefore = GC.GetTotalMemory(false);
+
+        for (int i = 0; i < measureRuns; i++)
+        {
+            sw.Restart();
+            await measure();
+            sw.Stop();
+            latencies[i] = sw.Elapsed.TotalMilliseconds;
+        }
+
+        long memAfter = GC.GetTotalMemory(false);
+
+        return new OperationResult
+        {
+            StrategyName = strategy.Name,
+            OperationName = name,
+            TreeSize = treeSize,
+            NodeCount = nodeCount,
+            Iterations = measureRuns,
+            LatenciesMs = latencies,
+            StorageSizeBytes = storageSize,
+            PeakMemoryDeltaBytes = Math.Max(0, memAfter - memBefore),
+            IsSuccess = true,
+        };
+    }
+    catch (Exception ex)
+    {
+        return new OperationResult
+        {
+            StrategyName = strategy.Name,
+            OperationName = name,
+            TreeSize = treeSize,
+            NodeCount = nodeCount,
+            Iterations = 0,
+            LatenciesMs = [],
+            IsSuccess = false,
+            ErrorMessage = ex.Message,
+        };
+    }
 }
 
 // ── Support types ─────────────────────────────────────────────────────────────

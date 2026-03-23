@@ -96,6 +96,7 @@ public sealed class MaterializedDocumentStrategy : IStorageStrategy, IStorageSna
     {
         var db = _client.GetDatabase("TreeBenchmark");
         _collection = db.GetCollection<MaterializedTreeDocument>("MaterializedTrees");
+        var rawCollection = db.GetCollection<BsonDocument>("MaterializedTrees");
 
         await _collection.Indexes.CreateManyAsync(
         [
@@ -105,6 +106,11 @@ public sealed class MaterializedDocumentStrategy : IStorageStrategy, IStorageSna
                     .Ascending(d => d.ProjectId),
                 new CreateIndexOptions { Unique = true, Name = "idx_client_project" }),
         ]);
+
+        await rawCollection.Indexes.CreateOneAsync(
+            new CreateIndexModel<BsonDocument>(
+                new BsonDocument("artifactIndex.$**", 1),
+                new CreateIndexOptions { Name = "idx_artifact_index_wildcard" }));
     }
 
     public async Task CleanupAsync(string clientId, string projectId)
@@ -205,6 +211,35 @@ public sealed class MaterializedDocumentStrategy : IStorageStrategy, IStorageSna
         var node = await GetSingleNodeAsync(clientId, projectId, artifactId);
         if (node?.ParentId == null) return null;
         return await GetSingleNodeAsync(clientId, projectId, node.ParentId);
+    }
+
+    public async Task<int> SearchAcrossProjectsByTypeAsync(
+        string clientId,
+        IReadOnlyList<string> projectIds,
+        ArtifactType artifactType)
+    {
+        var db = _client.GetDatabase("TreeBenchmark");
+        var rawCollection = db.GetCollection<BsonDocument>("MaterializedTrees");
+
+        var pipeline = new[]
+        {
+            new BsonDocument("$match", new BsonDocument
+            {
+                ["clientId"] = clientId,
+                ["projectId"] = new BsonDocument("$in", new BsonArray(projectIds)),
+            }),
+            new BsonDocument("$project", new BsonDocument
+            {
+                ["entries"] = new BsonDocument("$objectToArray", "$artifactIndex"),
+            }),
+            new BsonDocument("$unwind", "$entries"),
+            new BsonDocument("$match", new BsonDocument(
+                "entries.v.artifactType", artifactType.ToString())),
+            new BsonDocument("$count", "count"),
+        };
+
+        var result = await rawCollection.Aggregate<BsonDocument>(pipeline).FirstOrDefaultAsync();
+        return result == null ? 0 : result["count"].ToInt32();
     }
 
     // ── Mutations ─────────────────────────────────────────────────────────────

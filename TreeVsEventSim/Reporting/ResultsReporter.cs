@@ -12,6 +12,7 @@ public static class ResultsReporter
     private static readonly string[] Operations =
     [
         "WriteTree",
+        "SearchAcrossProjects",
         "ReadFullTree",
         "GetSingleNode",
         "GetChildren",
@@ -152,11 +153,17 @@ public static class ResultsReporter
             // Take the storage size from WriteTree (most representative)
             var writeResult = results.FirstOrDefault(
                 r => r.OperationName == "WriteTree" && r.StrategyName == strat);
+            var fallbackStorageResult = results.FirstOrDefault(
+                r => r.StrategyName == strat && r.IsSuccess && r.StorageSizeBytes > 0);
             var readResult = results.FirstOrDefault(
                 r => r.OperationName == "ReadFullTree" && r.StrategyName == strat);
 
-            var storageTxt = writeResult?.IsSuccess == true && writeResult.StorageSizeBytes > 0
-                ? FormatBytes(writeResult.StorageSizeBytes)
+            var storageBytes = writeResult?.IsSuccess == true && writeResult.StorageSizeBytes > 0
+                ? writeResult.StorageSizeBytes
+                : fallbackStorageResult?.StorageSizeBytes ?? -1;
+
+            var storageTxt = storageBytes > 0
+                ? FormatBytes(storageBytes)
                 : "[dim]N/A[/]";
 
             var memTxt = readResult?.IsSuccess == true
@@ -171,6 +178,9 @@ public static class ResultsReporter
 
     private static void PrintScalingComparison(IReadOnlyList<OperationResult> allResults)
     {
+        if (!allResults.Any(r => r.OperationName == "ReadFullTree"))
+            return;
+
         AnsiConsole.Write(new Rule(
             "[bold yellow]ReadFullTree Scaling Across Tree Sizes[/]").RuleStyle("yellow"));
 
@@ -257,7 +267,7 @@ public static class ResultsReporter
             .OrderByDescending(s => s).ToList();
         var reportSize = availableSizes.FirstOrDefault();
 
-        foreach (var op in new[] { "ReadFullTree", "GetSingleNode", "GetChildren", "WriteTree" })
+        foreach (var op in new[] { "SearchAcrossProjects", "ReadFullTree", "GetSingleNode", "GetChildren", "WriteTree" })
         {
             var sizeResults = allResults
                 .Where(r => r.TreeSize == reportSize && r.OperationName == op && r.IsSuccess)

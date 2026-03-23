@@ -43,6 +43,15 @@ public interface IStorageStrategy : IAsyncDisposable
     /// <summary>Get the direct parent of the given artifact.</summary>
     Task<ArtifactNode?> GetParentAsync(string clientId, string projectId, string artifactId);
 
+    /// <summary>
+    /// Search artifacts of a given type across multiple projects for the same client.
+    /// Returns the number of matching artifacts found.
+    /// </summary>
+    Task<int> SearchAcrossProjectsByTypeAsync(
+        string clientId,
+        IReadOnlyList<string> projectIds,
+        ArtifactType artifactType);
+
     // ── Mutation operations ───────────────────────────────────────────────────
 
     /// <summary>Append a new leaf artifact to the tree.</summary>

@@ -58,6 +58,10 @@ public sealed class Neo4jStrategy : IStorageStrategy, IStorageSnapshotProvider
                 await tx.RunAsync(
                     "CREATE INDEX artifact_id IF NOT EXISTS " +
                     "FOR (n:Artifact) ON (n.artifactId, n.projectId)");
+
+                await tx.RunAsync(
+                    "CREATE INDEX artifact_cross_project_search IF NOT EXISTS " +
+                    "FOR (n:Artifact) ON (n.clientId, n.projectId, n.artifactType)");
             });
         }
         catch (Exception ex)
@@ -308,6 +312,29 @@ public sealed class Neo4jStrategy : IStorageStrategy, IStorageSnapshotProvider
                 IsEnabled = rec["isEnabled"].As<bool>(),
                 Depth = (int)rec["depth"].As<long>(),
             };
+        });
+    }
+
+    public async Task<int> SearchAcrossProjectsByTypeAsync(
+        string clientId,
+        IReadOnlyList<string> projectIds,
+        ArtifactType artifactType)
+    {
+        if (!IsAvailable) return 0;
+
+        await using var session = _driver.AsyncSession();
+        return await session.ExecuteReadAsync(async tx =>
+        {
+            var cursor = await tx.RunAsync(
+                "MATCH (n:Artifact) " +
+                "WHERE n.clientId = $clientId " +
+                "  AND n.projectId IN $projectIds " +
+                "  AND n.artifactType = $artifactType " +
+                "RETURN count(n) AS count",
+                new { clientId, projectIds, artifactType = artifactType.ToString() });
+
+            if (!await cursor.FetchAsync()) return 0;
+            return (int)cursor.Current["count"].As<long>();
         });
     }
 

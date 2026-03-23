@@ -19,6 +19,36 @@ public static class TreeSimulator
     public static SimulatedTree Generate(TreeSize size, string clientId = "tenant-001")
     {
         var cfg = GetConfig(size);
+        return Generate(cfg, size, clientId);
+    }
+
+    public static SimulatedTree GenerateExactNodeCount(
+        int targetNodeCount,
+        string clientId = "tenant-001")
+    {
+        if (targetNodeCount != 10_000)
+            throw new NotSupportedException(
+                $"Exact node-count generation currently supports 10000 nodes only. Requested: {targetNodeCount}.");
+
+        var cfg = new SimulationConfig(
+            CapabilityCount: 2,
+            BusinessProcessCount: 13,
+            FlowsPerBusinessProcess: 3,
+            EpicsPerBusinessProcess: 5,
+            ArchitecturesPerEpic: 2,
+            FeaturesPerEpic: 3,
+            StoriesPerFeature: 7,
+            TestCasesPerStory: 1,
+            GitCommitsPerStory: 2);
+
+        return Generate(cfg, TreeSize.Custom, clientId);
+    }
+
+    private static SimulatedTree Generate(
+        SimulationConfig cfg,
+        TreeSize size,
+        string clientId)
+    {
         var projectId = Guid.NewGuid().ToString();
         var projection = new ArtifactTreeProjection
         {
@@ -268,7 +298,7 @@ public static class TreeSimulator
         int GitCommitsPerStory);
 }
 
-public enum TreeSize { Small, Medium, Large }
+public enum TreeSize { Small, Medium, Large, Custom }
 
 /// <summary>
 /// The generated tree together with the ordered event log that built it,
